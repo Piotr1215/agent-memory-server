@@ -569,10 +569,8 @@ async def merge_memories_with_llm(
     The merged memory:
     """
 
-    model_name = "gpt-4o-mini"
-
     response = await LLMClient.create_chat_completion(
-        model=model_name,
+        model=settings.generation_model,
         messages=[{"role": "user", "content": prompt}],
     )
 
