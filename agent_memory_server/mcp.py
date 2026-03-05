@@ -5,11 +5,11 @@ from typing import Any
 import ulid
 from mcp.server.fastmcp import FastMCP as _FastMCPBase
 
+from agent_memory_server import working_memory as working_memory_core
 from agent_memory_server.api import (
     create_long_term_memory as core_create_long_term_memory,
     delete_long_term_memory as core_delete_long_term_memory,
     get_long_term_memory as core_get_long_term_memory,
-    get_working_memory as core_get_working_memory,
     memory_prompt as core_memory_prompt,
     put_working_memory_core as core_put_working_memory,
     search_long_term_memory as core_search_long_term_memory,
@@ -77,6 +77,7 @@ class FastMCP(_FastMCPBase):
     """Extend FastMCP to support optional URL namespace and default STDIO namespace."""
 
     def __init__(self, *args, default_namespace=None, **kwargs):
+        kwargs.setdefault("stateless_http", True)
         super().__init__(*args, **kwargs)
         self.default_namespace = default_namespace
         self._current_request = None  # Initialize the attribute
@@ -85,11 +86,12 @@ class FastMCP(_FastMCPBase):
         from mcp.server.sse import SseServerTransport
         from starlette.applications import Starlette
         from starlette.requests import Request
+        from starlette.responses import Response
         from starlette.routing import Mount, Route
 
         sse = SseServerTransport(self.settings.message_path)
 
-        async def handle_sse(request: Request) -> None:
+        async def handle_sse(request: Request) -> Response:
             # Store the request in the FastMCP instance so call_tool can access it
             self._current_request = request
 
@@ -103,10 +105,12 @@ class FastMCP(_FastMCPBase):
                         read_stream,
                         write_stream,
                         self._mcp_server.create_initialization_options(),
+                        stateless=True,
                     )
             finally:
                 # Clean up request reference
                 self._current_request = None
+            return Response()
 
         return Starlette(
             debug=self.settings.debug,
@@ -172,6 +176,13 @@ class FastMCP(_FastMCPBase):
             uvicorn.Config(app, host="0.0.0.0", port=int(self.settings.port))
         ).serve()
 
+    async def run_streamable_http_async(self):
+        """Start streamable HTTP MCP server."""
+        from agent_memory_server.utils.redis import get_redis_conn
+
+        await get_redis_conn()
+        return await super().run_streamable_http_async()
+
     async def run_stdio_async(self):
         """Start STDIO MCP server."""
         from agent_memory_server.utils.redis import get_redis_conn
@@ -188,6 +199,7 @@ INSTRUCTIONS = """
 
 mcp_app = FastMCP(
     "Redis Agent Memory Server",
+    host=settings.mcp_host,
     port=settings.mcp_port,
     instructions=INSTRUCTIONS,
     default_namespace=settings.default_mcp_namespace,
@@ -899,9 +911,12 @@ async def get_working_memory(
     Returns:
         Working memory containing messages, context, and structured memory records
     """
-    return await core_get_working_memory(
+    result = await working_memory_core.get_working_memory(
         session_id=session_id, recent_messages_limit=recent_messages_limit
     )
+    if result is None:
+        return WorkingMemory(session_id=session_id, messages=[], memories=[])
+    return result
 
 
 @mcp_app.tool()

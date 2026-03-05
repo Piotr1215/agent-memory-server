@@ -569,10 +569,8 @@ async def merge_memories_with_llm(
     The merged memory:
     """
 
-    model_name = "gpt-4o-mini"
-
     response = await LLMClient.create_chat_completion(
-        model=model_name,
+        model=settings.generation_model,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -634,7 +632,7 @@ async def compact_long_term_memories(
     redis_client: Redis | None = None,
     vector_distance_threshold: float = 0.2,
     compact_hash_duplicates: bool = True,
-    compact_semantic_duplicates: bool = True,
+    compact_semantic_duplicates: bool = settings.compact_semantic_duplicates,
     perpetual: Perpetual = Perpetual(
         every=timedelta(minutes=settings.compaction_every_minutes), automatic=True
     ),

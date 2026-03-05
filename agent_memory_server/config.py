@@ -358,6 +358,7 @@ class Settings(BaseSettings):
         "gpt-5-mini"  # Faster, smaller model for quick tasks like query optimization
     )
     port: int = 8000
+    mcp_host: str = "0.0.0.0"
     mcp_port: int = 9000
 
     # Vector store factory configuration
@@ -487,6 +488,7 @@ Optimized query:"""
 
     # Compaction settings
     compaction_every_minutes: int = 10
+    compact_semantic_duplicates: bool = True
 
     # Docket task timeout for LLM-dependent tasks (in minutes)
     # This controls how long tasks like memory compaction, extraction, and summarization
