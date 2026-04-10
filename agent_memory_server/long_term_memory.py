@@ -10,7 +10,6 @@ from typing import Any
 from docket import Timeout
 from docket.dependencies import Perpetual
 from redis.asyncio import Redis
-from redis.commands.core import HashDataPersistOptions
 from ulid import ULID
 
 from agent_memory_server.config import settings
@@ -536,20 +535,17 @@ async def extract_memory_structure(
     # Guard: only update if the key still exists. A race between semantic
     # deduplication (which deletes merged keys) and this background task
     # can recreate deleted keys as orphaned hashes with only topics/entities.
-    # Use HSETEX with FXX to atomically update only if the fields already
-    # exist on the hash — a deleted key has no fields, so nothing is written.
     key = Keys.memory_key(memory.id)
-    result = await redis.hsetex(
+    if not await redis.exists(key):
+        logger.info(f"Skipping topic/entity update for deleted memory {memory.id}")
+        return
+    await redis.hset(
         key,
         mapping={
             "topics": encode_tag_values(merged_topics),
             "entities": encode_tag_values(merged_entities),
         },
-        data_persist_option=HashDataPersistOptions.FXX,
-        keepttl=True,
     )
-    if result == 0:
-        logger.info(f"Skipping topic/entity update for deleted memory {memory.id}")
 
 
 async def merge_memories_with_llm(
