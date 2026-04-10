@@ -3,7 +3,6 @@ from unittest import mock
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from redis.commands.core import HashDataPersistOptions
 
 from agent_memory_server.filters import Entities, Namespace, SessionId, Topics
 from agent_memory_server.long_term_memory import (
@@ -326,26 +325,20 @@ class TestLongTermMemory:
                 memory_type=MemoryTypeEnum.SEMANTIC,
             )
 
-            # Simulate key exists (HSETEX FXX returns number of fields set)
-            mock_redis.hsetex.return_value = 2
+            mock_redis.exists.return_value = 1
 
             await extract_memory_structure(memory)
 
             # Verify extraction was called
             mock_extract.assert_called_once_with("Test text content")
 
-            # Verify HSETEX was called with FXX for atomic guard
-            mock_redis.hsetex.assert_called_once()
-            call_kwargs = mock_redis.hsetex.call_args
-            key = call_kwargs[0][0]
-            assert "memory_idx:" in key and "test-id" in key
-
-            # Check comma-separated values and FXX flag
+            # Verify exists check + hset were called
+            mock_redis.exists.assert_called_once()
+            mock_redis.hset.assert_called_once()
+            call_kwargs = mock_redis.hset.call_args
             mapping = call_kwargs[1]["mapping"]
             assert mapping["topics"] == "topic1,topic2"
             assert mapping["entities"] == "entity1,entity2"
-            assert call_kwargs[1]["data_persist_option"] == HashDataPersistOptions.FXX
-            assert call_kwargs[1]["keepttl"] is True
 
     @pytest.mark.asyncio
     async def test_update_long_term_memory_preserves_decoded_tags_on_text_only_patch(
@@ -397,8 +390,8 @@ class TestLongTermMemory:
         """Regression: extract_memory_structure must not recreate deleted keys.
 
         When semantic deduplication deletes a memory key between scheduling
-        and execution of the background extraction task, HSETEX with FXX
-        must detect the missing fields and skip the update to avoid orphaned
+        and execution of the background extraction task, the exists check
+        must detect the missing key and skip the update to avoid orphaned
         hashes.
         """
         with (
@@ -413,8 +406,8 @@ class TestLongTermMemory:
             mock_get_redis.return_value = mock_redis
             mock_extract.return_value = (["topic1"], ["entity1"])
 
-            # Simulate key does NOT exist (HSETEX FXX returns 0)
-            mock_redis.hsetex.return_value = 0
+            # Simulate key does NOT exist
+            mock_redis.exists.return_value = 0
 
             memory = MemoryRecord(
                 id="deleted-id",
@@ -426,9 +419,8 @@ class TestLongTermMemory:
             # Should complete without error, skipping the update
             await extract_memory_structure(memory)
 
-            # HSETEX was called (FXX handles the existence check)
-            mock_redis.hsetex.assert_called_once()
-            # hset should NOT have been called directly
+            # exists was checked, hset was NOT called
+            mock_redis.exists.assert_called_once()
             mock_redis.hset.assert_not_called()
 
     @pytest.mark.asyncio
