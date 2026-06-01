@@ -929,6 +929,12 @@ async def compact_long_term_memories(
             # Process memories in batches to avoid overloading
             batch_size = 50
             processed_ids = set()  # Track which memories have been processed
+            # Memories merged away or produced by a merge in THIS pass. They
+            # must not be reprocessed (their snapshot text is stale and the
+            # peer no longer exists) nor offered as merge candidates again,
+            # otherwise a merged "bridge" output re-bridges to its remaining
+            # neighbor and snowballs the whole pass into a single mega-memory.
+            merged_or_consumed_ids: set[str] = set()
 
             memories_list = search_result.memories
             for i in range(0, len(memories_list), batch_size):
@@ -937,8 +943,11 @@ async def compact_long_term_memories(
                 for memory_result in batch:
                     memory_id = memory_result.id
 
-                    # Skip if already processed
-                    if memory_id in processed_ids:
+                    # Skip if already processed or already consumed/merged
+                    if (
+                        memory_id in processed_ids
+                        or memory_id in merged_or_consumed_ids
+                    ):
                         continue
 
                     # Convert MemoryRecordResult to MemoryRecord for deduplication
@@ -959,10 +968,14 @@ async def compact_long_term_memories(
                     # Add this memory to processed list BEFORE processing to prevent cycles
                     processed_ids.add(memory_id)
 
-                    # Check for semantic duplicates
+                    # Check for semantic duplicates. Pass the set of ids
+                    # already merged/consumed this pass so a freshly merged
+                    # output cannot be rediscovered as a candidate and merged
+                    # again (the snowball / mega-memory failure mode).
                     (
                         merged_memory,
                         was_merged,
+                        consumed_ids,
                     ) = await deduplicate_by_semantic_search(
                         memory=memory_obj,
                         redis_client=redis_client,
@@ -970,6 +983,7 @@ async def compact_long_term_memories(
                         user_id=user_id,
                         session_id=session_id,
                         vector_distance_threshold=vector_distance_threshold,
+                        exclude_ids=merged_or_consumed_ids,
                     )
 
                     if was_merged:
@@ -982,9 +996,17 @@ async def compact_long_term_memories(
                         # destroying both as the previous order did.
                         await db.delete_memories([memory_id])
 
+                        # Record the peers this merge deleted so the loop does
+                        # not reprocess them from the stale start-of-pass
+                        # snapshot (they no longer exist).
+                        merged_or_consumed_ids.update(consumed_ids)
+
                         if merged_memory:
-                            # Mark the merged memory as processed to prevent cycles
+                            # Mark the merged memory as processed to prevent
+                            # cycles, and exclude it from further candidacy so
+                            # it cannot snowball into neighbors this pass.
                             processed_ids.add(merged_memory.id)
+                            merged_or_consumed_ids.add(merged_memory.id)
         logger.info(
             f"Completed semantic deduplication. Merged {semantic_memories_merged} memories."
         )
@@ -1090,7 +1112,13 @@ async def index_long_term_memories(
 
             # Check for semantic duplicates (respects compact_semantic_duplicates setting)
             if not was_deduplicated and settings.compact_semantic_duplicates:
-                deduped_memory, was_merged = await deduplicate_by_semantic_search(
+                # Dedup-on-write merges a single incoming memory; there is no
+                # multi-memory pass to snowball, so no exclusion set is needed.
+                (
+                    deduped_memory,
+                    was_merged,
+                    _consumed,
+                ) = await deduplicate_by_semantic_search(
                     memory=current_memory,
                     redis_client=redis,
                     vector_distance_threshold=vector_distance_threshold,
@@ -1514,12 +1542,14 @@ async def _semantic_merge_group_is_cohesive(
     user_id_filter: UserId | None,
     session_id_filter: SessionId | None,
     vector_distance_threshold: float,
+    exclude_ids: set[str] | None = None,
 ) -> bool:
     """Reject bridge memories and non-cohesive semantic merge groups."""
 
     if not candidate_memories:
         return True
 
+    exclude_ids = exclude_ids or set()
     candidate_ids = {candidate.id for candidate in candidate_memories if candidate.id}
     # Once the merge group is already at the hard cap, extra neighbors can
     # simply mean "there are more same-topic memories than we are willing to
@@ -1544,6 +1574,7 @@ async def _semantic_merge_group_is_cohesive(
             result.id
             for result in (search_result.memories if search_result else [])
             if result.id not in {candidate_memory.id, memory.id}
+            and result.id not in exclude_ids
         }
         extra_ids = related_ids - candidate_ids
         if extra_ids and not merge_group_is_capped:
@@ -1575,7 +1606,8 @@ async def deduplicate_by_semantic_search(
     user_id: str | None = None,
     session_id: str | None = None,
     vector_distance_threshold: float | None = None,
-) -> tuple[MemoryRecord | None, bool]:
+    exclude_ids: set[str] | None = None,
+) -> tuple[MemoryRecord | None, bool, list[str]]:
     """
     Check if a memory has semantic duplicates and merge if found.
 
@@ -1595,10 +1627,19 @@ async def deduplicate_by_semantic_search(
         session_id: Optional session ID filter
         vector_distance_threshold: Distance threshold for semantic similarity.
             If None, uses settings.deduplication_distance_threshold (default 0.35)
+        exclude_ids: Memory ids that must not be treated as merge candidates.
+            The periodic compaction loop passes the ids of memories already
+            merged away or produced by a merge in the current pass, so a
+            freshly merged "bridge" output cannot be re-absorbed and snowball
+            into a mega-memory within the same pass.
 
     Returns:
-        Tuple of (memory to save (potentially merged), was_merged)
+        Tuple of (memory to save (potentially merged), was_merged, consumed_ids)
+        where consumed_ids are the peer memory ids deleted by this merge (empty
+        when nothing merged). Callers use consumed_ids to stop reprocessing
+        memories that no longer exist.
     """
+    exclude_ids = exclude_ids or set()
     # Skip semantic deduplication for memories with empty text
     # OpenAI's embedding API rejects empty strings with "'$.input' is invalid"
     if not memory.text:
@@ -1606,7 +1647,7 @@ async def deduplicate_by_semantic_search(
             "Skipping semantic deduplication for memory with empty text: memory_id=%s",
             memory.id,
         )
-        return memory, False
+        return memory, False, []
 
     if not redis_client:
         redis_client = await get_redis_conn()
@@ -1656,9 +1697,12 @@ async def deduplicate_by_semantic_search(
     vector_search_result = search_result.memories if search_result else []
 
     # Filter out the memory itself from the search results (avoid self-duplication)
-    vector_search_result = [m for m in vector_search_result if m.id != memory.id][
-        :SEMANTIC_DEDUP_SEARCH_LIMIT
-    ]
+    # and any ids the caller marked off-limits this pass (memories already
+    # merged away or produced by a merge), so a merged bridge output cannot be
+    # rediscovered and re-merged, snowballing into a mega-memory.
+    vector_search_result = [
+        m for m in vector_search_result if m.id != memory.id and m.id not in exclude_ids
+    ][:SEMANTIC_DEDUP_SEARCH_LIMIT]
 
     if vector_search_result and len(vector_search_result) > 0:
         merge_group = [memory] + vector_search_result
@@ -1670,6 +1714,7 @@ async def deduplicate_by_semantic_search(
             user_id_filter=user_id_filter,
             session_id_filter=session_id_filter,
             vector_distance_threshold=vector_distance_threshold,
+            exclude_ids=exclude_ids,
         ):
             # Full group is not cohesive (dense cluster). Fall back to
             # pairwise merge with the single closest neighbor.
@@ -1713,7 +1758,7 @@ async def deduplicate_by_semantic_search(
                         pair_chars,
                         settings.max_merge_input_chars,
                     )
-                    return memory, False
+                    return memory, False, []
                 logger.info(
                     "Full group non-cohesive; invoking LLM pairwise merge "
                     "for %s with closest neighbor %s (dist=%.4f)",
@@ -1728,7 +1773,7 @@ async def deduplicate_by_semantic_search(
                         memory.id,
                         closest.id,
                     )
-                    return memory, False
+                    return memory, False, []
                 # Index merged memory BEFORE deleting source so a failure
                 # (e.g. embedding API error) doesn't permanently destroy
                 # both originals. If indexing fails, abort the merge and
@@ -1748,15 +1793,15 @@ async def deduplicate_by_semantic_search(
                         closest.id,
                         e,
                     )
-                    return memory, False
+                    return memory, False, []
                 await db.delete_memories([closest.id])
                 logger.info(
                     "Pairwise merged memory %s with %s",
                     memory.id,
                     closest.id,
                 )
-                return merged_memory, True
-            return memory, False
+                return merged_memory, True, [closest.id] if closest.id else []
+            return memory, False, []
 
         # Found semantically similar memories
         similar_memory_ids = [memory.id for memory in vector_search_result]
@@ -1776,7 +1821,7 @@ async def deduplicate_by_semantic_search(
                 group_chars,
                 settings.max_merge_input_chars,
             )
-            return memory, False
+            return memory, False, []
 
         # Merge the memories
         merged_memory = await merge_memories_with_llm(
@@ -1812,7 +1857,7 @@ async def deduplicate_by_semantic_search(
                 len(similar_memory_ids),
                 e,
             )
-            return memory, False
+            return memory, False, []
 
         # Delete the similar memories using the database
         if similar_memory_ids:
@@ -1821,10 +1866,10 @@ async def deduplicate_by_semantic_search(
         logger.info(
             f"Merged new memory with {len(similar_memory_ids)} semantic duplicates"
         )
-        return merged_memory, True
+        return merged_memory, True, [mid for mid in similar_memory_ids if mid]
 
     # No similar memories found or error occurred
-    return memory, False
+    return memory, False, []
 
 
 async def promote_working_memory_to_long_term(

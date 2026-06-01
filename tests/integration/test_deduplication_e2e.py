@@ -237,7 +237,7 @@ class TestDeduplicationE2E:
             memory_type="semantic",
         )
 
-        _, was_merged = await deduplicate_by_semantic_search(
+        _, was_merged, _ = await deduplicate_by_semantic_search(
             memory=memory2,
             redis_client=use_test_redis_connection,
             namespace=unique_namespace,
@@ -284,7 +284,7 @@ class TestDeduplicationE2E:
         )
 
         # Test with default threshold (0.35)
-        result, was_merged = await deduplicate_by_semantic_search(
+        result, was_merged, _ = await deduplicate_by_semantic_search(
             memory=memory2,
             redis_client=use_test_redis_connection,
             namespace=unique_namespace,
@@ -342,7 +342,7 @@ class TestDeduplicationE2E:
         )
 
         # Test with relaxed threshold (0.35) - SHOULD detect duplicate
-        result_relaxed, was_merged_relaxed = await deduplicate_by_semantic_search(
+        result_relaxed, was_merged_relaxed, _ = await deduplicate_by_semantic_search(
             memory=memory2,
             redis_client=use_test_redis_connection,
             namespace=unique_namespace,
@@ -485,7 +485,7 @@ class TestEmbeddingsInputValidation:
         # No error means it was filtered successfully
 
         # deduplicate_by_semantic_search should also handle empty text gracefully
-        result, was_merged = await deduplicate_by_semantic_search(
+        result, was_merged, _ = await deduplicate_by_semantic_search(
             memory=empty_text_memory,
             redis_client=use_test_redis_connection,
             namespace=unique_namespace,
@@ -531,7 +531,7 @@ class TestEmbeddingsInputValidation:
         )
 
         # Whitespace-only strings are accepted by OpenAI's API
-        result, was_merged = await deduplicate_by_semantic_search(
+        result, was_merged, _ = await deduplicate_by_semantic_search(
             memory=whitespace_memory,
             redis_client=use_test_redis_connection,
             namespace=unique_namespace,
@@ -571,7 +571,7 @@ class TestEmbeddingsInputValidation:
         )
 
         # This should NOT raise an error
-        result, was_merged = await deduplicate_by_semantic_search(
+        result, was_merged, _ = await deduplicate_by_semantic_search(
             memory=valid_text_memory,
             redis_client=use_test_redis_connection,
             namespace=unique_namespace,

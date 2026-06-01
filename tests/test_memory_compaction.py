@@ -465,7 +465,7 @@ async def test_pairwise_size_gate_declines_oversized_merge(
         namespace="ns",
     )
 
-    result, was_merged = await ltm.deduplicate_by_semantic_search(
+    result, was_merged, _ = await ltm.deduplicate_by_semantic_search(
         memory,
         redis_client=async_redis_client,
     )
@@ -536,7 +536,7 @@ async def test_cohesive_group_size_gate_declines_oversized_merge(
     )
 
     # Combined: 50 (memory) + 50*2 (candidates) = 150 > 100 gate
-    result, was_merged = await ltm.deduplicate_by_semantic_search(
+    result, was_merged, _ = await ltm.deduplicate_by_semantic_search(
         memory,
         redis_client=async_redis_client,
     )

@@ -159,7 +159,7 @@ async def test_unrelated_diet_and_basketball_memories_do_not_semantically_compac
 
     assert search_result.total == 0
 
-    returned_memory, was_merged = await deduplicate_by_semantic_search(
+    returned_memory, was_merged, _ = await deduplicate_by_semantic_search(
         memory=sports_memory,
         redis_client=async_redis_client,
         namespace=namespace,
@@ -251,7 +251,7 @@ async def test_bridge_memory_is_rejected_when_candidate_group_is_not_cohesive(
     merge_mock = AsyncMock(side_effect=fake_merge)
     monkeypatch.setattr(ltm, "merge_memories_with_llm", merge_mock)
 
-    returned_memory, was_merged = await deduplicate_by_semantic_search(
+    returned_memory, was_merged, _ = await deduplicate_by_semantic_search(
         memory=bridge_memory,
         redis_client=async_redis_client,
         namespace=namespace,
@@ -331,7 +331,7 @@ async def test_cohesive_paraphrase_cluster_still_merges(
     merge_mock = AsyncMock(side_effect=fake_merge)
     monkeypatch.setattr(ltm, "merge_memories_with_llm", merge_mock)
 
-    _, was_merged = await deduplicate_by_semantic_search(
+    _, was_merged, _ = await deduplicate_by_semantic_search(
         memory=MemoryRecord(
             id="coffee-3",
             text=coffee_3,
@@ -715,7 +715,7 @@ async def test_issue_200_valid_same_topic_pairs_still_merge(
     merge_mock = AsyncMock(side_effect=fake_merge)
     monkeypatch.setattr(ltm, "merge_memories_with_llm", merge_mock)
 
-    _, was_merged = await deduplicate_by_semantic_search(
+    _, was_merged, _ = await deduplicate_by_semantic_search(
         memory=candidate_memory,
         redis_client=async_redis_client,
         namespace=namespace,
@@ -782,7 +782,7 @@ async def test_capped_semantic_merge_group_still_passes_cohesion_check(
     merge_mock = AsyncMock(side_effect=fake_merge)
     monkeypatch.setattr(ltm, "merge_memories_with_llm", merge_mock)
 
-    _, was_merged = await deduplicate_by_semantic_search(
+    _, was_merged, _ = await deduplicate_by_semantic_search(
         memory=MemoryRecord(
             id="candidate-memory",
             text=candidate_text,
@@ -888,7 +888,7 @@ async def test_compaction_preserves_candidate_window_for_indexed_anchor(
     merge_mock = AsyncMock(side_effect=fake_merge)
     monkeypatch.setattr(ltm, "merge_memories_with_llm", merge_mock)
 
-    _, was_merged = await deduplicate_by_semantic_search(
+    _, was_merged, _ = await deduplicate_by_semantic_search(
         memory=anchor_memory,
         redis_client=async_redis_client,
         namespace=namespace,
@@ -965,7 +965,7 @@ async def test_capped_dense_cluster_with_extra_neighbor_still_merges(
     merge_mock = AsyncMock(side_effect=fake_merge)
     monkeypatch.setattr(ltm, "merge_memories_with_llm", merge_mock)
 
-    _, was_merged = await deduplicate_by_semantic_search(
+    _, was_merged, _ = await deduplicate_by_semantic_search(
         memory=MemoryRecord(
             id="candidate-memory",
             text=candidate_text,
