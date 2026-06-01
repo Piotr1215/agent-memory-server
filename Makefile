@@ -1,4 +1,4 @@
-.PHONY: help setup sync sync-dev lint format test test-api test-unit test-integration test-cov pre-commit verify clean server mcp mcp-sse worker rebuild-index migrate
+.PHONY: help setup sync sync-dev lint format test test-api test-unit test-integration test-cov pre-commit verify clean server mcp mcp-sse worker rebuild-index migrate docker-image docker-push
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -66,6 +66,24 @@ rebuild-index:  ## Rebuild Redis search index
 
 migrate:  ## Run memory migrations
 	uv run agent-memory migrate-memories
+
+# Patched container image (fork-only)
+# The tag base is derived from __version__, so the deployed image label can
+# never drift from the code again (this is what caused the 0.15.1-vs-0.15.2
+# mismatch). The patch serial is explicit and monotonic: bump it for every
+# real build. Example: make docker-push PATCH=13
+IMAGE_REPO ?= piotrzan/agent-memory-server
+VERSION := $(shell grep -E '^__version__' agent_memory_server/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+IMAGE_TAG := $(VERSION)-patched-v$(PATCH)
+
+docker-image:  ## Build patched image (requires PATCH=<n>, e.g. make docker-image PATCH=13)
+	@test -n "$(PATCH)" || { echo "PATCH is required, e.g. make docker-image PATCH=13"; exit 1; }
+	docker build -t $(IMAGE_REPO):$(IMAGE_TAG) -f Dockerfile .
+	@echo "built $(IMAGE_REPO):$(IMAGE_TAG)"
+
+docker-push:  ## Push patched image (requires PATCH=<n>, e.g. make docker-push PATCH=13)
+	@test -n "$(PATCH)" || { echo "PATCH is required, e.g. make docker-push PATCH=13"; exit 1; }
+	docker push $(IMAGE_REPO):$(IMAGE_TAG)
 
 # Cleanup
 clean:  ## Clean up generated files and caches
