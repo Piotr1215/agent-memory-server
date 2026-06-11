@@ -132,12 +132,21 @@ app.include_router(memory_router)
 
 @app.get("/.well-known/oauth-authorization-server")
 async def oauth_authorization_server_metadata():
-    """RFC 9728 Protected Resource Metadata for MCP OIDC discovery."""
+    """RFC 8414 Authorization Server Metadata for MCP OIDC discovery."""
     if not settings.oauth2_issuer_url:
         return {"error": "OIDC not configured"}
+    issuer = settings.oauth2_issuer_url.rstrip("/")
     return {
-        "resource": f"https://{settings.oauth2_resource_host or 'localhost'}",
-        "authorization_servers": [settings.oauth2_issuer_url],
+        "issuer": issuer,
+        "authorization_endpoint": f"{issuer}/oauth2/auth",
+        "token_endpoint": f"{issuer}/oauth2/token",
+        "jwks_uri": f"{issuer}/.well-known/jwks.json",
+        "userinfo_endpoint": f"{issuer}/userinfo",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "scopes_supported": ["openid", "profile", "email", "groups", "offline_access"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
     }
 
 

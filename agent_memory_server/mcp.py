@@ -4,7 +4,6 @@ from typing import Any
 
 import ulid
 from mcp.server.auth.provider import AccessToken, TokenVerifier
-from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP as _FastMCPBase
 
 from agent_memory_server import working_memory as working_memory_core
@@ -181,34 +180,80 @@ class FastMCP(_FastMCPBase):
         ).serve()
 
     def streamable_http_app(self):
-        """Return a Starlette app for streamable-http with namespace routing.
-
-        Extends the parent's streamable_http_app() by adding a namespace-prefixed
-        route while preserving auth middleware and protected resource routes.
+        """Return a Starlette app for streamable-http with namespace routing
+        and OAuth auth that matches the WWW-Authenticate format Claude expects.
         """
+        import json
+
         from starlette.requests import Request
         from starlette.routing import Route
 
-        # Get the parent's app which includes auth middleware and well-known routes
         app = super().streamable_http_app()
         session_manager = self._session_manager
         mcp_instance = self
+        oauth_enabled = (
+            settings.auth_mode == "oauth2"
+            and settings.oauth2_issuer_url
+            and settings.oauth2_resource_host
+        )
+        verifier = JWTTokenVerifier() if oauth_enabled else None
+        issuer = settings.oauth2_issuer_url.rstrip("/") if oauth_enabled else None
+        audience = settings.oauth2_audience or "agent-memory-server"
 
-        class _NamespaceAwareHandler:
-            """ASGI handler that captures request for namespace extraction."""
+        class _OAuthAwareHandler:
+            """ASGI handler with OAuth auth returning authorization_uri header."""
 
             async def __call__(self, scope, receive, send):
-                request = Request(scope, receive, send)
-                mcp_instance._current_request = request
-                try:
-                    await session_manager.handle_request(scope, receive, send)
-                finally:
-                    mcp_instance._current_request = None
+                if oauth_enabled and scope["type"] == "http":
+                    request = Request(scope, receive, send)
+                    mcp_instance._current_request = request
+                    try:
+                        auth_header = request.headers.get("authorization", "")
+                        if not auth_header.startswith("Bearer "):
+                            await self._send_401(send)
+                            return
+                        token = auth_header[7:]
+                        result = await verifier.verify_token(token)
+                        if result is None:
+                            await self._send_401(send)
+                            return
+                        await session_manager.handle_request(scope, receive, send)
+                    finally:
+                        mcp_instance._current_request = None
+                else:
+                    request = Request(scope, receive, send)
+                    mcp_instance._current_request = request
+                    try:
+                        await session_manager.handle_request(scope, receive, send)
+                    finally:
+                        mcp_instance._current_request = None
 
-        handler = _NamespaceAwareHandler()
+            async def _send_401(self, send):
+                www_auth = (
+                    f'Bearer realm="{audience}", '
+                    f'authorization_uri="{issuer}/oauth2/auth"'
+                )
+                body = json.dumps({
+                    "error": "unauthorized",
+                    "error_description": "Missing access token",
+                }).encode()
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"www-authenticate", www_auth.encode()),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+
+        handler = _OAuthAwareHandler()
         path = self.settings.streamable_http_path
 
-        # Add namespace-prefixed route to the existing app
+        # Replace the SDK's routes with our auth-aware handler
+        app.routes.clear()
+        app.routes.append(Route(path, endpoint=handler))
         app.routes.append(Route(f"/{{namespace}}{path}", endpoint=handler))
         return app
 
@@ -265,32 +310,12 @@ class JWTTokenVerifier(TokenVerifier):
             return None
 
 
-def _build_mcp_auth_kwargs() -> dict[str, Any]:
-    """Build auth kwargs for FastMCP if OAuth2 is configured."""
-    if (
-        settings.auth_mode != "oauth2"
-        or not settings.oauth2_issuer_url
-        or not settings.oauth2_resource_host
-    ):
-        return {}
-
-    resource_url = f"https://{settings.oauth2_resource_host}"
-    return {
-        "auth": AuthSettings(
-            issuer_url=settings.oauth2_issuer_url,
-            resource_server_url=resource_url,
-        ),
-        "token_verifier": JWTTokenVerifier(),
-    }
-
-
 mcp_app = FastMCP(
     "Redis Agent Memory Server",
     host=settings.mcp_host,
     port=settings.mcp_port,
     instructions=INSTRUCTIONS,
     default_namespace=settings.default_mcp_namespace,
-    **_build_mcp_auth_kwargs(),
 )
 
 
